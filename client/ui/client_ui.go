@@ -51,7 +51,7 @@ const (
 )
 
 func main() {
-	daemonAddr, showSettings, showNetworks, showDebug, errorMsg, saveLogsInFile := parseFlags()
+	daemonAddr, showSettings, showNetworks, showStatus, showDebug, errorMsg, saveLogsInFile := parseFlags()
 
 	// Initialize file logging if needed.
 	var logFile string
@@ -75,13 +75,13 @@ func main() {
 	}
 
 	// Create the service client (this also builds the settings or networks UI if requested).
-	client := newServiceClient(daemonAddr, logFile, a, showSettings, showNetworks, showDebug)
+	client := newServiceClient(daemonAddr, logFile, a, showSettings, showNetworks, showStatus, showDebug)
 
 	// Watch for theme/settings changes to update the icon.
 	go watchSettingsChanges(a, client)
 
 	// Run in window mode if any UI flag was set.
-	if showSettings || showNetworks || showDebug {
+	if showSettings || showNetworks || showStatus || showDebug {
 		a.Run()
 		return
 	}
@@ -102,13 +102,14 @@ func main() {
 }
 
 // parseFlags reads and returns all needed command-line flags.
-func parseFlags() (daemonAddr string, showSettings, showNetworks, showDebug bool, errorMsg string, saveLogsInFile bool) {
+func parseFlags() (daemonAddr string, showSettings, showNetworks, showStatusWindow, showDebug bool, errorMsg string, saveLogsInFile bool) {
 	defaultDaemonAddr := "unix:///var/run/netbird.sock"
 	if runtime.GOOS == "windows" {
 		defaultDaemonAddr = "tcp://127.0.0.1:41731"
 	}
 	flag.StringVar(&daemonAddr, "daemon-addr", defaultDaemonAddr, "Daemon service address to serve CLI requests [unix|tcp]://[path|host:port]")
 	flag.BoolVar(&showSettings, "settings", false, "run settings window")
+	flag.BoolVar(&showStatusWindow, "status", false, "run status window")
 	flag.BoolVar(&showNetworks, "networks", false, "run networks window")
 	flag.BoolVar(&showDebug, "debug", false, "run debug window")
 	flag.StringVar(&errorMsg, "error-msg", "", "displays an error message window")
@@ -192,6 +193,7 @@ type serviceClient struct {
 	mAutoConnect       *systray.MenuItem
 	mEnableRosenpass   *systray.MenuItem
 	mNotifications     *systray.MenuItem
+	mStatusWindow      *systray.MenuItem
 	mAdvancedSettings  *systray.MenuItem
 	mCreateDebugBundle *systray.MenuItem
 	mExitNode          *systray.MenuItem
@@ -199,7 +201,9 @@ type serviceClient struct {
 	// application with main windows.
 	app                  fyne.App
 	wSettings            fyne.Window
+	wStatusWindow        fyne.Window
 	showAdvancedSettings bool
+	showStatusWindow     bool
 	sendNotification     bool
 
 	// input elements for settings form
@@ -210,6 +214,10 @@ type serviceClient struct {
 	iPreSharedKey  *widget.Entry
 	iInterfaceName *widget.Entry
 	iInterfacePort *widget.Entry
+
+	// status elements for status window
+	connectStatus *widget.Label
+	connectButton *widget.Button
 
 	// switch elements for settings form
 	sRosenpassPermissive *widget.Check
@@ -245,7 +253,7 @@ type menuHandler struct {
 // newServiceClient instance constructor
 //
 // This constructor also builds the UI elements for the settings window.
-func newServiceClient(addr string, logFile string, a fyne.App, showSettings bool, showNetworks bool, showDebug bool) *serviceClient {
+func newServiceClient(addr string, logFile string, a fyne.App, showSettings bool, showNetworks bool, showStatusWindow bool, showDebug bool) *serviceClient {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &serviceClient{
 		ctx:              ctx,
@@ -257,6 +265,7 @@ func newServiceClient(addr string, logFile string, a fyne.App, showSettings bool
 
 		showAdvancedSettings: showSettings,
 		showNetworks:         showNetworks,
+		showStatusWindow:     showStatusWindow,
 		update:               version.NewUpdate(),
 	}
 
@@ -267,6 +276,8 @@ func newServiceClient(addr string, logFile string, a fyne.App, showSettings bool
 		s.showSettingsUI()
 	case showNetworks:
 		s.showNetworksUI()
+	case showStatusWindow:
+		s.showStatusWindowUI()
 	case showDebug:
 		s.showDebugUI()
 	}
@@ -632,6 +643,7 @@ func (s *serviceClient) onTrayReady() {
 	s.mEnableRosenpass = s.mSettings.AddSubMenuItemCheckbox("Enable Quantum-Resistance", quantumResistanceMenuDescr, false)
 	s.mNotifications = s.mSettings.AddSubMenuItemCheckbox("Notifications", notificationsMenuDescr, false)
 	s.mAdvancedSettings = s.mSettings.AddSubMenuItem("Advanced Settings", advancedSettingsMenuDescr)
+	s.mStatusWindow = s.mSettings.AddSubMenuItem("Show Status Window", showStatusWindowDescr)
 	s.mCreateDebugBundle = s.mSettings.AddSubMenuItem("Create Debug Bundle", debugBundleMenuDescr)
 	s.loadSettings()
 
@@ -739,6 +751,13 @@ func (s *serviceClient) onTrayReady() {
 				if err := s.updateConfig(); err != nil {
 					log.Errorf("failed to update config: %v", err)
 				}
+			case <-s.mStatusWindow.ClickedCh:
+				s.mStatusWindow.Disable()
+				go func() {
+					defer s.mStatusWindow.Enable()
+					defer s.getSrvConfig()
+					s.runSelfCommand("status", "true")
+				}()
 			case <-s.mAdvancedSettings.ClickedCh:
 				s.mAdvancedSettings.Disable()
 				go func() {
