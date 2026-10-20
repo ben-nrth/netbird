@@ -84,19 +84,24 @@ func (d *FilteredDevice) Read(bufs [][]byte, sizes []int, offset int) (n int, er
 	filter := d.filter
 	d.mutex.RUnlock()
 
+	// wireguard-go keeps bufs[i] tied to its own element i across reads, so a
+	// dropped packet is marked with size 0 instead of being removed.
 	if filter != nil {
 		for i := 0; i < n; i++ {
+			if sizes[i] < 1 {
+				continue
+			}
 			if filter.FilterOutbound(bufs[i][offset:offset+sizes[i]], sizes[i]) {
-				bufs = append(bufs[:i], bufs[i+1:]...)
-				sizes = append(sizes[:i], sizes[i+1:]...)
-				n--
-				i--
+				sizes[i] = 0
 			}
 		}
 	}
 
 	if pc := d.capture.Load(); pc != nil {
 		for i := 0; i < n; i++ {
+			if sizes[i] < 1 {
+				continue
+			}
 			(*pc).Offer(bufs[i][offset:offset+sizes[i]], true)
 		}
 	}
